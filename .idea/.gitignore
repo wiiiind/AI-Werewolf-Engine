@@ -1,0 +1,28 @@
+# 默认忽略的文件
+/shelf/
+/workspace.xml
+
+# 基于编辑器的 HTTP 客户端请求
+/httpRequests/
+
+# Datasource local storage ignored files
+/dataSources/
+/dataSources.local.xml
+
+# 忽略 CLion 的项目配置文件夹
+.idea/
+
+# 忽略 CLion 自动生成的工程文件
+*.iml
+*.xml
+
+# 忽略 CMake 编译产生的中间文件夹（非常重要，里面文件巨大）
+cmake-build-debug/
+cmake-build-release/
+
+# 忽略编译出的二进制可执行文件
+server
+MyTinyWebServer
+
+# 忽略日志文件
+*.log
