@@ -3,4 +3,12 @@ project(MyTinyWebServer)
 
 set(CMAKE_CXX_STANDARD 20)
 
-add_executable(MyTinyWebServer main.cpp)
+find_package(Threads REQUIRED)
+
+add_executable(MyTinyWebServer
+        main.cpp
+        locker.h
+        threadpool.h
+)
+
+target_link_libraries(MyTinyWebServer PRIVATE Threads::Threads)

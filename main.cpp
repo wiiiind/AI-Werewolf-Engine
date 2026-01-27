@@ -8,6 +8,8 @@
 #include <sys/epoll.h>  // 核心 epoll 头文件
 #include <fcntl.h>      // fcntl 设置非阻塞
 
+#include "threadpool.h"
+
 const int MAX_EVENT_NUMBER = 10000;  // 监听的最大事件数
 const int BUFFER_SIZE = 1024;
 
@@ -34,6 +36,13 @@ void addfd(int epollfd, int fd, bool enable_et) {
     epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);  // 注册事件
                                                 // 这里只需要传event指针，避免再次复制，event在addfd结束会被自动销毁
 }
+
+class Task {
+    public:
+    void process() {
+        std::cout << "Task is processing by thread: " << pthread_self() << std::endl;
+    }
+};
 
 int main() {
     int port = 9006;    // 监听的端口
@@ -68,6 +77,13 @@ int main() {
     int epollfd = epoll_create(5);      // 这个5在这里其实也是powerless husband
     if (epollfd == -1) {
         std::cerr << "epoll_create error: " << strerror(errno) << std::endl;
+    }
+
+    threadpool<Task>* pool = nullptr;
+    try {
+        pool = new threadpool<Task>;
+    } catch (...) {
+        return 1;
     }
 
     std::vector<epoll_event> events(MAX_EVENT_NUMBER);  // 这里存储的不是监听的所有fd，而是监听到需要处理的fd
@@ -122,7 +138,10 @@ int main() {
                         break;
                     }
                     else {
-                        std::cout << "Get: " << ret << " bytes: " << buf << std::endl;
+                        /*std::cout << "Get: " << ret << " bytes: " << buf << std::endl;*/
+                        std::cout << "Receive data, adding to thread pool..." << std::endl;
+                        Task* task = new Task();
+                        pool->append(task);
                         send(sockfd, buf, ret, 0);
                     }
                 }
