@@ -9,6 +9,8 @@ add_executable(MyTinyWebServer
         main.cpp
         locker.h
         threadpool.h
+        http_conn.h
+        http_conn.cpp
 )
 
 target_link_libraries(MyTinyWebServer PRIVATE Threads::Threads)

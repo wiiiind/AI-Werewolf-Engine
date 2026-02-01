@@ -50,6 +50,7 @@ threadpool<T>::threadpool(int thread_number, int max_requests): m_thread_number(
     for (int i = 0; i < thread_number; i++) {
         printf("Create the %dth thread\n", i);
         if (pthread_create(m_threads + i, NULL, worker, this) != 0) {
+            // 通过this与线程池保持联系
             delete[] m_threads;
             throw std::exception();
         }
