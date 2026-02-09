@@ -11,6 +11,9 @@ add_executable(MyTinyWebServer
         threadpool.h
         http_conn.h
         http_conn.cpp
+        lst_timer.h
+        epoll_utils.cpp
+        epoll_utils.h
 )
 
 target_link_libraries(MyTinyWebServer PRIVATE Threads::Threads)

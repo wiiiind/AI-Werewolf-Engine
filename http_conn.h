@@ -25,6 +25,7 @@
 #include <sys/uio.h>
 
 #include "locker.h"
+#include "epoll_utils.h"
 
 
 class http_conn {
@@ -93,7 +94,7 @@ private:
     char* get_line() { return m_read_buf + m_start_line; }  // 获取当前行的首地址
 
 public:
-    // 将所有socket时间都注册到一个epoll内核事件表
+    // 将所有socket事件都注册到一个epoll内核事件表
     static int m_epollfd;
     static int m_user_count;                     // 统计用户数量
 
@@ -120,14 +121,10 @@ private:
     int m_content_length;                        // 请求消息体长度
     bool m_linger;                               // 是否要求保持连接
 
-    char* m_file_address;                        // 目标文件被mmap到内存中的起始位置
+    char* m_file_address;                        // 目标文件被mmap到内存中的位置
     struct stat m_file_stat;                     // 目标文件状态
     struct iovec m_iv[2];                        // 用writev来写
     int m_iv_count;
 };
-
-void addfd(int epollfd, int fd, bool one_shot);
-void removefd(int epollfd, int fd);
-void modfd(int epollfd, int fd, int ev);
 
 #endif

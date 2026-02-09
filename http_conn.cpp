@@ -18,51 +18,13 @@ const char* error_500_form = "There was an unusual problem serving the requested
 // 网站的根目录，指向你刚才建的 resources 文件夹
 const char* doc_root = "/home/fengyijia/projects/MyTinyWebServer/resources";
 
-// 设置文件描述符为非阻塞
-int setnonblocking(int fd) {
-    int old_option = fcntl(fd, F_GETFL);    // 获取旧的标志位
-    int new_option = old_option | O_NONBLOCK;    // 把“非阻塞”通过“或”操作设为开启状态
-    fcntl(fd, F_SETFL, new_option);         // 对fd执行“F_SETFL”（设置）操作，参数为new_option
-    // 现在已经修改好了
-    return old_option;                           // 返回旧的标志位（可能调用函数有需要）
-}
-
-// 把文件描述符fd添加到epoll的监控列表
-// enable_et: 是否启用ET（边缘触发，即“只有新的可读事件才触发”）
-void addfd(int epollfd, int fd, bool enable_et) {
-    epoll_event event{};                          // 创建一个epoll事件的结构体
-    event.data.fd = fd;                         // 把他绑定到要监听的fd
-    event.events = EPOLLIN;                     // 监听的事件是“可读事件”
-    if (enable_et) {
-        event.events |= EPOLLET;                // 把他设为ET
-    }
-    setnonblocking(fd);                         // 把fd设为非阻塞
-    // 非阻塞：recv(fd)时，如果没有数据，线程会挂起而不是卡死
-    epoll_ctl(epollfd, EPOLL_CTL_ADD, fd, &event);  // 注册事件
-    // 这里只需要传event指针，避免再次复制，event在addfd结束会被自动销毁
-}
-
-// 从epoll中移除文件描述符
-void removefd(int epollfd, int fd) {
-    epoll_ctl(epollfd, EPOLL_CTL_DEL, fd, NULL);
-    close(fd);
-}
-
-// 修改文件描述符，重置socket上的EPOLLONESHOT事件（一次触发）
-void modfd(int epollfd, int fd, int ev) {
-    epoll_event event;
-    event.data.fd = fd;
-    event.events = ev | EPOLLIN | EPOLLONESHOT | EPOLLRDHUP;
-    epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &event);
-}
-
 int http_conn::m_user_count = 0;
 int http_conn::m_epollfd = -1;
 
 void http_conn::close_conn(bool real_close) {
     if (real_close && (m_sockfd != -1)) {
         unmap();
-        removefd(m_epollfd, m_sockfd);
+        epoll_utils::removefd(m_epollfd, m_sockfd);
         m_sockfd = -1;
         m_user_count--;
     }
@@ -85,7 +47,7 @@ bool http_conn::write() {
 
     // 如果没有东西要写，这逻辑肯定有问题
     if (bytes_to_send == 0) {
-        // modfd(m_epollfd, m_sockfd, EPOLLIN); // 一般不会走到这，先注释
+        epoll_utils::modfd(m_epollfd, m_sockfd, EPOLLIN, 1);
         init();
         return true;
     }
@@ -98,7 +60,7 @@ bool http_conn::write() {
             // 如果缓冲区满了（EAGAIN），那就以后再发
             if (errno == EAGAIN) {
                 // 重新注册写事件，等一会再试
-                modfd(m_epollfd, m_sockfd, EPOLLOUT);
+                epoll_utils::modfd(m_epollfd, m_sockfd, EPOLLOUT, 1);
                 return true;
             }
             // 真的出错了（比如对方断开连接），那就释放 mmap 内存
@@ -127,7 +89,7 @@ bool http_conn::write() {
         // 如果所有数据都发完了
         if (bytes_to_send <= 0) {
             unmap(); // 发完了，归还内存
-            modfd(m_epollfd, m_sockfd, EPOLLIN); // 重新监听读事件，准备接收下一次请求
+            epoll_utils::modfd(m_epollfd, m_sockfd, EPOLLIN, 1); // 重新监听读事件，准备接收下一次请求
 
             if (m_linger) {
                 init(); // 如果是 keep-alive，初始化状态机，但不关闭连接
@@ -147,7 +109,7 @@ void http_conn::init(int sockfd, const sockaddr_in& addr) {
     int reuse = 1;
     setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
-    addfd(m_epollfd, sockfd, true);
+    epoll_utils::addfd(m_epollfd, sockfd, true, 1);
     m_user_count++;
 
     init();
@@ -205,7 +167,7 @@ void http_conn::process() {
     HTTP_CODE read_ret = process_read();
     if (read_ret == NO_REQUEST) {
         // 请求直到完整接收
-        modfd(m_epollfd, m_sockfd, EPOLLIN);
+        epoll_utils::modfd(m_epollfd, m_sockfd, EPOLLIN, 1);
         return;
     }
 
@@ -216,7 +178,7 @@ void http_conn::process() {
     }
 
     // 3. 注册监听
-    modfd(m_epollfd, m_sockfd, EPOLLOUT);
+    epoll_utils::modfd(m_epollfd, m_sockfd, EPOLLOUT, 1);
 }
 
 bool http_conn::process_write(HTTP_CODE ret) {
@@ -229,7 +191,7 @@ bool http_conn::process_write(HTTP_CODE ret) {
         case BAD_REQUEST:
             add_status_line(400, error_400_title);
             add_headers(strlen(error_400_form));
-            if (!add_content(error_400_form)) r000000000000.eturn false;
+            if (!add_content(error_400_form)) return false;
             break;
         case NO_RESOURCE:
             add_status_line(404, error_404_title);
@@ -437,7 +399,7 @@ http_conn::HTTP_CODE http_conn::process_read() {
                 if (ret == BAD_REQUEST) {
                     return BAD_REQUEST;
                 } else if (ret == GET_REQUEST) {
-                    // 解析完成！调用 do_request 寻找文件（这一步还没写，先留着）
+                    // 解析完成！调用 do_request 寻找文件
                     return do_request();
                 }
                 break;
