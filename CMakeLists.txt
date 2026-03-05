@@ -1,19 +1,37 @@
-cmake_minimum_required(VERSION 3.28)
-project(MyTinyWebServer)
+cmake_minimum_required(VERSION 3.20)
+project(WerewolfEngine)
 
-set(CMAKE_CXX_STANDARD 20)
+# 1. 设置 C++ 标准
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 2. 查找依赖库
 find_package(Threads REQUIRED)
+find_package(CURL REQUIRED)
 
-add_executable(MyTinyWebServer
+# 3. 设置头文件搜索路径 (包含你刚建的四个文件夹)
+include_directories(net base ai game)
+
+# 4. 显式列出所有源文件
+set(SOURCE_FILES
         main.cpp
-        locker.h
-        threadpool.h
-        http_conn.h
-        http_conn.cpp
-        lst_timer.h
-        epoll_utils.cpp
-        epoll_utils.h
+        net/epoll_utils.cpp
+        net/http_conn.cpp
+        base/log.cpp
+        ai/ai_client.cpp
+        ai/ai_client.h
+        game/player.h
+        game/Judge.cpp
+        game/Judge.h
+        base/string_utils.h
+
 )
 
-target_link_libraries(MyTinyWebServer PRIVATE Threads::Threads)
+# 5. 生成可执行程序
+add_executable(WerewolfEngine ${SOURCE_FILES})
+
+# 6. 链接库 (连接线程库和 CURL)
+target_link_libraries(WerewolfEngine PRIVATE
+        Threads::Threads
+        CURL::libcurl
+)

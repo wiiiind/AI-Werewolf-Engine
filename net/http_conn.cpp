@@ -4,6 +4,8 @@
 
 #include "http_conn.h"
 
+#include "log.h"
+
 
 const char* ok_200_title = "OK";
 const char* error_400_title = "Bad Request";
@@ -155,14 +157,14 @@ bool http_conn::read() {
             return false;
         }
         m_read_idx += bytes_read;
-        printf("读取到了数据: %s\n", m_read_buf);
+        LOG_DEBUG("读取到了数据: %s", m_read_buf);
         return true;
     }
     return true;
 }
 
 void http_conn::process() {
-    printf("线程池正在处理请求...\n");
+    LOG_DEBUG("线程池正在处理请求...");
     // 1. 解析HTTP请求
     HTTP_CODE read_ret = process_read();
     if (read_ret == NO_REQUEST) {
@@ -205,7 +207,7 @@ bool http_conn::process_write(HTTP_CODE ret) {
             break;
 
         case FILE_REQUEST:
-            add_status_line(500, ok_200_title);
+            add_status_line(200, ok_200_title);
             if (m_file_stat.st_size!=0) {
                 add_headers(m_file_stat.st_size);
 
@@ -303,6 +305,11 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char* text) {
         m_url = strchr(m_url, '/'); // 找到域名的结束位置
     }
 
+    // 如果请求的是根目录，则默认指向 index.html
+    if (strcmp(m_url, "/") == 0) {
+        m_url = (char*)"/index.html";
+    }
+
     if (!m_url || m_url[0] != '/') {
         return BAD_REQUEST;
     }
@@ -346,8 +353,7 @@ http_conn::HTTP_CODE http_conn::parse_headers(char* text) {
         m_host = text;
     }
     else {
-        // 其他头部我们暂时不关心，打印一下看看就行
-        // printf("oop! unknow header: %s\n", text);
+        // LOG_DEBUG("Oop! unknow header: %s", text);
     }
     return NO_REQUEST;
 }
@@ -381,7 +387,7 @@ http_conn::HTTP_CODE http_conn::process_read() {
         m_start_line = m_checked_idx;
 
         // 打印一下日志，看看解析到了什么
-        printf("got 1 http line: %s\n", text);
+        LOG_DEBUG("got 1 http line: %s", text);
 
         // 主状态机转移
         switch (m_check_state) {
@@ -427,7 +433,7 @@ http_conn::HTTP_CODE http_conn::do_request() {
     int len = strlen(doc_root);
 
     strncpy(m_real_file + len, m_url, FILENAME_LEN - len - 1);
-    printf("正在读取文件: %s\n", m_real_file);
+    LOG_INFO("正在读取文件: %s", m_real_file);
 
     // 2. 获取文件状态
     if (stat(m_real_file, &m_file_stat) < 0) {

@@ -27,6 +27,7 @@
 
 #include <time.h>
 #include "http_conn.h"
+#include "log.h"
 
 // 前向声明
 struct client_data;
@@ -137,7 +138,7 @@ void adjust_timer(util_timer* timer) {
 
         char time_str[32];
         epoll_utils::get_format_time(time_str, sizeof(time_str));
-        printf("[%s] Timer tick: checking expired connections...\n", time_str);
+        LOG_INFO("Timer tick: checking expired connections...");
 
         time_t cur = time(NULL);    // 当前时间
         util_timer* tmp = head;
