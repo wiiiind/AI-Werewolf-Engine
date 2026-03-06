@@ -34,6 +34,7 @@ void DaySpeakPhase::execute() {
             const std::string instruction = m_ai.render_named_template(
                 "day_last_words_instruction",
                 {
+                    {"death_context", describe_death_context(dead_id == m_context.last_night_poison_target ? "poison" : "wolf")},
                     {"player_id", std::to_string(dead_player->get_id())},
                     {"role_name", m_callbacks.role_to_string(dead_player->get_role())}
                 }

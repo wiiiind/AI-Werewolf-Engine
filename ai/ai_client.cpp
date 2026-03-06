@@ -65,7 +65,7 @@ std::string AIClient::chat_sync(const json& messages) {
         throw std::runtime_error("DeepSeek API key is not initialized.");
     }
 
-    // std::cout << messages << std::endl;
+    std::cout << messages << std::endl;
     CURL* curl = curl_easy_init();
     if (curl == nullptr) {
         throw std::runtime_error("Failed to initialize CURL for DeepSeek request.");

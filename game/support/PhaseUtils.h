@@ -15,5 +15,6 @@ bool is_single_forward_double_reverse();
 std::vector<int> sort_ids_by_time_rule(std::vector<int> ids);
 std::vector<int> build_circular_order_from_anchor(int anchor_id, int player_count, bool forward);
 int select_last_dead_anchor(const std::vector<int>& deaths_last_night, int poison_target, bool forward);
+std::string describe_death_context(const std::string& cause);
 
 #endif

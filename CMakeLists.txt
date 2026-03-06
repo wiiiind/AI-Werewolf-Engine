@@ -56,3 +56,8 @@ target_link_libraries(WerewolfEngine PRIVATE
         Threads::Threads
         CURL::libcurl
 )
+
+add_executable(LogOverflowTest
+        tests/log_overflow_test.cpp
+        base/log.cpp
+)

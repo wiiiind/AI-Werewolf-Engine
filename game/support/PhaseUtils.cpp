@@ -99,3 +99,22 @@ int select_last_dead_anchor(const std::vector<int>& deaths_last_night, int poiso
         ? *std::max_element(deaths_last_night.begin(), deaths_last_night.end())
         : *std::min_element(deaths_last_night.begin(), deaths_last_night.end());
 }
+
+std::string describe_death_context(const std::string& cause) {
+    if (cause == "wolf") {
+        return "昨晚你在黑夜中遇害，你确认已死亡。";
+    }
+    if (cause == "poison") {
+        return "昨晚你被女巫毒杀，你确认已死亡。";
+    }
+    if (cause == "vote") {
+        return "你在刚刚的投票表决中被放逐，你确认已死亡。";
+    }
+    if (cause == "explosion") {
+        return "你被白狼王自爆带走，你确认已死亡。";
+    }
+    if (cause == "hunter_shot") {
+        return "你被猎人开枪带走，你确认已死亡。";
+    }
+    return "你确认已死亡。";
+}

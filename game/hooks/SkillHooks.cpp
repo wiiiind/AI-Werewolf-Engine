@@ -98,13 +98,13 @@ bool handle_white_wolf_king_interrupt(
         }
 
         const std::string last_words_instruction = ai.render_named_template(
-            "day_last_words_instruction",
+            "wwk_last_words_instruction",
             {
                 {"player_id", std::to_string(white_wolf_king->get_id())},
                 {"role_name", role_to_string(white_wolf_king->get_role())}
             }
         );
-        const auto last_words_result = ai.ask_player(*white_wolf_king, "day_last_words_instruction", last_words_instruction);
+        const auto last_words_result = ai.ask_player(*white_wolf_king, "wwk_last_words_instruction", last_words_instruction);
         try {
             Event last_words_event;
             last_words_event.type = EventType::BROADCAST;
@@ -156,6 +156,7 @@ bool handle_hunter_death(
     const std::string instruction = ai.render_named_template(
         "hunter_shoot_instruction",
         {
+            {"death_context", describe_death_context(cause)},
             {"player_id", std::to_string(hunter->get_id())},
             {"alive_list", join_player_ids(context.alive_players())}
         }
