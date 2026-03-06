@@ -58,7 +58,7 @@ private:
     locker m_mutex;
 };
 
-#define CLOSE_LOG  <-- 想压测时取消这行的注释
+// #define CLOSE_LOG  // 想压测时可以关闭日志
 
 #ifdef CLOSE_LOG
 #define LOG_DEBUG(format, ...)

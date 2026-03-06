@@ -28,6 +28,20 @@ set(SOURCE_FILES
         game/RuleEngine.cpp
         game/RuleEngine.h
         game/AIOrchestrator.h
+        game/support/PromptParsers.cpp
+        game/support/PromptParsers.h
+        game/support/PhaseUtils.cpp
+        game/support/PhaseUtils.h
+        game/hooks/SkillHooks.cpp
+        game/hooks/SkillHooks.h
+        game/phases/VotePhase.cpp
+        game/phases/VotePhase.h
+        game/phases/DaySpeakPhase.cpp
+        game/phases/DaySpeakPhase.h
+        game/phases/SheriffElectionPhase.cpp
+        game/phases/SheriffElectionPhase.h
+        game/phases/NightPhase.cpp
+        game/phases/NightPhase.h
         game/Judge.cpp
         game/Judge.h
         base/string_utils.h

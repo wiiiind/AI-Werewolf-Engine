@@ -35,6 +35,7 @@ public:
     std::vector<std::unique_ptr<Player>> players;
     json templates = json::object();
     json global_history = json::array();
+    std::vector<std::string> pending_day_messages;
 
     GameState state = GameState::NIGHT_PHASE;
     int day_count = 1;
@@ -49,6 +50,7 @@ public:
     int sheriff_id = -1;
     int guard_target = -1;
     int last_guard_target = -1;
+    int last_night_poison_target = -1;
 };
 
 #endif

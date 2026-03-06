@@ -1,6 +1,20 @@
 #include "EventBus.h"
+
+namespace {
+const char* event_type_to_string(EventType type) {
+    switch (type) {
+        case EventType::BROADCAST: return "BROADCAST";
+        case EventType::PUBLIC_RECORD: return "PUBLIC_RECORD";
+        case EventType::PRIVATE_RECORD: return "PRIVATE_RECORD";
+        case EventType::PLAYER_DIED: return "PLAYER_DIED";
+        case EventType::PHASE_ENTER: return "PHASE_ENTER";
+        default: return "CUSTOM";
+    }
+}
+}
 #include <algorithm>
 #include <iostream>
+#include "log.h"
 
 EventBus::EventBus(GameContext& context) : m_context(context) {}
 
@@ -35,7 +49,17 @@ bool EventBus::unsubscribe(HookId hook_id) {
 }
 
 bool EventBus::publish(Event event) {
+    LOG_INFO("[GAME][EVENT] type=%s name=%s actor=%d target=%d visible=%s speaker=%s message=%s payload=%s",
+             event_type_to_string(event.type),
+             event.name.c_str(),
+             event.actor_id,
+             event.target_id,
+             event.visible_to_all ? "true" : "false",
+             event.speaker.c_str(),
+             event.message.c_str(),
+             event.payload.dump().c_str());
     if (run_type_hooks(event) || run_named_hooks(event)) {
+        LOG_INFO("[GAME][EVENT] intercepted type=%s name=%s", event_type_to_string(event.type), event.name.c_str());
         return true;
     }
 

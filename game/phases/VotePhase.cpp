@@ -1,0 +1,216 @@
+#include "phases/VotePhase.h"
+#include <algorithm>
+#include <iostream>
+#include "log.h"
+#include <map>
+#include "RuleEngine.h"
+#include "support/PhaseUtils.h"
+#include "support/PromptParsers.h"
+
+VotePhase::VotePhase(GameContext& context, EventBus& event_bus, AIOrchestrator& ai, const VotePhaseCallbacks& callbacks)
+    : m_context(context), m_event_bus(event_bus), m_ai(ai), m_callbacks(callbacks) {}
+
+void VotePhase::execute() {
+    std::cout << "\n========== 投票阶段 ==========" << std::endl;
+    LOG_INFO("[GAME][PHASE][VOTE] day=%d begin", m_context.day_count);
+
+    const std::vector<Player*> alive_players = m_context.alive_players();
+    const std::string alive_list = join_player_ids(alive_players);
+    std::vector<int> vote_counts(m_context.player_count() + 1, 0);
+    std::map<int, std::vector<int>> round1_records;
+
+    const auto round1_results = m_ai.ask_all_players_concurrently(
+        alive_players,
+        "day_vote_instruction",
+        [this, &alive_list](Player& player) {
+            return m_ai.render_named_template(
+                "day_vote_instruction",
+                {
+                    {"alive_list", alive_list},
+                    {"player_id", std::to_string(player.get_id())},
+                    {"role_name", m_callbacks.role_to_string(player.get_role())}
+                }
+            );
+        }
+    );
+
+    for (const auto& result : round1_results) {
+        LOG_INFO("[GAME][P%d][THOUGHT][day_vote] %s", result.player_id, parse_thought_from_reply(result.raw_reply, "（未提供思考）").c_str());
+        Player* voter = m_context.find_player(result.player_id);
+        if (voter == nullptr || !voter->is_alive()) {
+            continue;
+        }
+
+        const int target = parse_target_from_reply(result.raw_reply);
+        LOG_INFO("[GAME][P%d][DECISION][day_vote] target=%d", result.player_id, target);
+        const bool valid_target = target >= 1 && target <= m_context.player_count() && m_context.is_player_alive(target);
+        if (valid_target) {
+            vote_counts[target]++;
+            round1_records[target].push_back(voter->get_id());
+        } else {
+            round1_records[-1].push_back(voter->get_id());
+        }
+    }
+
+    const std::string round1_details = format_vote_records(round1_records);
+    LOG_INFO("[GAME][VOTE][ROUND1] details=%s", round1_details.c_str());
+    VoteResolution round1_resolution = RuleEngine::resolve_top_votes(vote_counts, 1, m_context.player_count());
+    round1_resolution = RuleEngine::apply_sheriff_tiebreak(round1_resolution, m_context.sheriff_id, round1_records, m_context);
+
+    int exiled_id = -1;
+    if (round1_resolution.leaders.empty()) {
+        m_event_bus.broadcast("系统", "无人有效投票，平安日。");
+    } else if (round1_resolution.leaders.size() == 1) {
+        exiled_id = round1_resolution.leaders.front();
+    } else {
+        const std::string pk_names = join_ids(round1_resolution.leaders);
+        m_event_bus.broadcast("系统", "出现平票！PK台候选人: " + pk_names + "。\n第一轮详细票型: " + round1_details);
+
+        for (int candidate_id : round1_resolution.leaders) {
+            Player* candidate = m_context.find_player(candidate_id);
+            if (candidate == nullptr) {
+                continue;
+            }
+            std::vector<int> rivals;
+            for (int other_id : round1_resolution.leaders) {
+                if (other_id != candidate_id) {
+                    rivals.push_back(other_id);
+                }
+            }
+            const std::string instruction = m_ai.render_named_template(
+                "day_pk_speech_instruction",
+                {
+                    {"rivals", join_ids(rivals)},
+                    {"vote_history_details", round1_details},
+                    {"player_id", std::to_string(candidate->get_id())},
+                    {"role_name", m_callbacks.role_to_string(candidate->get_role())}
+                }
+            );
+            AIOrchestrator::AIResult result = m_ai.ask_player(*candidate, "day_pk_speech_instruction", instruction);
+            LOG_INFO("[GAME][P%d][THOUGHT][day_pk_speech] %s", candidate->get_id(), parse_thought_from_reply(result.raw_reply, "（未提供思考）").c_str());
+            try {
+                Event speak_event;
+                speak_event.type = EventType::BROADCAST;
+                speak_event.name = "player_speak";
+                speak_event.actor_id = candidate->get_id();
+                speak_event.speaker = std::to_string(candidate->get_id()) + "号[PK发言]";
+                speak_event.message = parse_speech_from_reply(result.raw_reply);
+                LOG_INFO("[GAME][P%d][DECISION][day_pk_speech] speech=%s", candidate->get_id(), speak_event.message.c_str());
+                if (m_event_bus.publish(std::move(speak_event))) {
+                    return;
+                }
+            } catch (...) {
+                m_event_bus.append_public_record("系统", std::to_string(candidate->get_id()) + "号PK发言解析失败。");
+            }
+        }
+
+        std::vector<Player*> pk_voters;
+        for (Player* player : m_context.alive_players()) {
+            if (std::find(round1_resolution.leaders.begin(), round1_resolution.leaders.end(), player->get_id()) == round1_resolution.leaders.end()) {
+                pk_voters.push_back(player);
+            }
+        }
+        if (pk_voters.empty()) {
+            pk_voters = m_context.alive_players();
+        }
+
+        std::fill(vote_counts.begin(), vote_counts.end(), 0);
+        std::map<int, std::vector<int>> round2_records;
+        const auto round2_results = m_ai.ask_all_players_concurrently(
+            pk_voters,
+            "day_pk_vote_instruction",
+            [this, &pk_names, &round1_details](Player& player) {
+                return m_ai.render_named_template(
+                    "day_pk_vote_instruction",
+                    {
+                        {"pk_names", pk_names},
+                        {"vote_history_details", round1_details},
+                        {"player_id", std::to_string(player.get_id())},
+                        {"role_name", m_callbacks.role_to_string(player.get_role())}
+                    }
+                );
+            }
+        );
+
+        for (const auto& result : round2_results) {
+            LOG_INFO("[GAME][P%d][THOUGHT][day_pk_vote] %s", result.player_id, parse_thought_from_reply(result.raw_reply, "（未提供思考）").c_str());
+            Player* voter = m_context.find_player(result.player_id);
+            if (voter == nullptr || !voter->is_alive()) {
+                continue;
+            }
+
+            const int target = parse_target_from_reply(result.raw_reply);
+            LOG_INFO("[GAME][P%d][DECISION][day_pk_vote] target=%d", result.player_id, target);
+            const bool valid_target = std::find(round1_resolution.leaders.begin(), round1_resolution.leaders.end(), target) != round1_resolution.leaders.end();
+            if (valid_target) {
+                vote_counts[target]++;
+                round2_records[target].push_back(voter->get_id());
+            } else {
+                round2_records[-1].push_back(voter->get_id());
+            }
+        }
+
+        const std::string round2_details = format_vote_records(round2_records);
+        LOG_INFO("[GAME][VOTE][PK] details=%s", round2_details.c_str());
+        VoteResolution round2_resolution = RuleEngine::resolve_top_votes(vote_counts, 1, m_context.player_count());
+        round2_resolution = RuleEngine::apply_sheriff_tiebreak(round2_resolution, m_context.sheriff_id, round2_records, m_context);
+
+        std::vector<int> filtered;
+        for (int id : round2_resolution.leaders) {
+            if (std::find(round1_resolution.leaders.begin(), round1_resolution.leaders.end(), id) != round1_resolution.leaders.end()) {
+                filtered.push_back(id);
+            }
+        }
+        round2_resolution.leaders = filtered;
+
+        if (round2_resolution.leaders.size() == 1) {
+            exiled_id = round2_resolution.leaders.front();
+            m_event_bus.broadcast("系统", "PK结果：放逐 " + std::to_string(exiled_id) + " 号。\n详情: " + round2_details);
+        } else {
+            m_event_bus.broadcast("系统", "PK台再次平票或全员弃票，本轮流局，无人出局！\n详情: " + round2_details);
+        }
+    }
+
+    if (exiled_id != -1) {
+        LOG_INFO("[GAME][VOTE][EXILE] player=%d", exiled_id);
+        m_event_bus.broadcast("系统", std::to_string(exiled_id) + "号玩家在表决中被投票出局");
+        m_callbacks.publish_player_death(exiled_id, "vote", true);
+
+        if (m_callbacks.handle_win_if_needed()) {
+            return;
+        }
+
+        if (Player* dead_player = m_context.find_player(exiled_id)) {
+            const std::string instruction = m_ai.render_named_template(
+                "day_last_words_instruction",
+                {
+                    {"player_id", std::to_string(dead_player->get_id())},
+                    {"role_name", m_callbacks.role_to_string(dead_player->get_role())}
+                }
+            );
+            AIOrchestrator::AIResult result = m_ai.ask_player(*dead_player, "day_last_words_instruction", instruction);
+            LOG_INFO("[GAME][P%d][THOUGHT][last_words] %s", dead_player->get_id(), parse_thought_from_reply(result.raw_reply, "（未提供思考）").c_str());
+            try {
+                Event speak_event;
+                speak_event.type = EventType::BROADCAST;
+                speak_event.name = "last_words";
+                speak_event.actor_id = dead_player->get_id();
+                speak_event.speaker = std::to_string(exiled_id) + "号(遗言)";
+                speak_event.message = parse_speech_from_reply(result.raw_reply);
+                LOG_INFO("[GAME][P%d][DECISION][last_words] speech=%s", dead_player->get_id(), speak_event.message.c_str());
+                if (m_event_bus.publish(std::move(speak_event))) {
+                    return;
+                }
+            } catch (...) {
+                m_event_bus.append_public_record("系统", std::to_string(exiled_id) + "号遗言解析失败。");
+            }
+        }
+    }
+
+    if (m_callbacks.handle_win_if_needed()) {
+        return;
+    }
+
+    m_context.day_count++;
+    m_context.state = GameState::NIGHT_PHASE;
+}

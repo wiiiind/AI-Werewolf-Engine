@@ -4,7 +4,6 @@
 #include <string>
 #include "GameContext.h"
 #include "EventBus.h"
-#include "RuleEngine.h"
 #include "AIOrchestrator.h"
 
 class Judge {
@@ -26,7 +25,7 @@ private:
     void run_vote();
 
     void handle_sheriff_death(int dead_id);
-    void handle_hunter_shoot(int hunter_id);
+    bool publish_player_death(int dead_id, const std::string& cause, bool allow_hunter);
     bool handle_win_if_needed();
 
 private:
