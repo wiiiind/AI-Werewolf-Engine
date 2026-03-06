@@ -21,6 +21,13 @@ set(SOURCE_FILES
         ai/ai_client.cpp
         ai/ai_client.h
         game/player.h
+        game/GameContext.cpp
+        game/GameContext.h
+        game/EventBus.cpp
+        game/EventBus.h
+        game/RuleEngine.cpp
+        game/RuleEngine.h
+        game/AIOrchestrator.h
         game/Judge.cpp
         game/Judge.h
         base/string_utils.h
