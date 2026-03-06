@@ -28,6 +28,16 @@ bool handle_white_wolf_king_interrupt(
     if (event.type != EventType::BROADCAST) {
         return false;
     }
+    if (event.name == "player_speak" && context.state == GameState::DAY_SPEAK_PHASE) {
+        return false;
+    }
+    if (event.name == "player_speak" && context.state == GameState::DAY_VOTE_PHASE) {
+        return false;
+    }
+    if ((event.name == "sheriff_speech" || event.name == "sheriff_pk_speech") &&
+        context.state == GameState::SHERIFF_ELECTION_PHASE) {
+        return false;
+    }
     if (event.name != "player_speak" &&
         event.name != "last_words" &&
         event.name != "sheriff_speech" &&
@@ -44,15 +54,21 @@ bool handle_white_wolf_king_interrupt(
         return false;
     }
 
+    const std::string prompt_name =
+        context.state == GameState::SHERIFF_ELECTION_PHASE
+            ? (context.day_count == 1
+                ? "wwk_interrupt_sheriff_day1_instruction"
+                : "wwk_interrupt_sheriff_day2_instruction")
+            : "wwk_interrupt_other_day_instruction";
     const std::string instruction = ai.render_named_template(
-        "wwk_interrupt_instruction",
+        prompt_name,
         {
             {"speaker_id", std::to_string(event.actor_id)},
             {"speech_content", event.message}
         }
     );
 
-    const auto result = ai.ask_player(*white_wolf_king, "wwk_interrupt_instruction", instruction);
+    const auto result = ai.ask_player(*white_wolf_king, prompt_name, instruction);
     try {
         json parsed = json::parse(clean_response(result.raw_reply));
         if (!parsed.value("explode", false)) {
@@ -92,6 +108,7 @@ bool handle_white_wolf_king_interrupt(
             );
         }
 
+        context.exploded_wwk_commander_id = white_wolf_king->get_id();
         callbacks.publish_player_death(white_wolf_king->get_id(), "explosion", false);
         if (target_id != -1) {
             callbacks.publish_player_death(target_id, "explosion", true);

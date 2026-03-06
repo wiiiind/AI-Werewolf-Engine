@@ -1,9 +1,52 @@
 #include "phases/DaySpeakPhase.h"
+#include <atomic>
 #include <algorithm>
 #include <iostream>
+#include <mutex>
+#include <thread>
+#include "block_queue.h"
 #include "log.h"
 #include "support/PhaseUtils.h"
 #include "support/PromptParsers.h"
+
+namespace {
+using AskOptions = AIOrchestrator::AskOptions;
+using RequestMode = AIOrchestrator::RequestMode;
+
+std::string select_wwk_interrupt_prompt_name(const GameContext& context) {
+    return "wwk_interrupt_other_day_instruction";
+}
+
+struct SpeechCheckpoint {
+    int speaker_id = -1;
+    std::size_t history_size_before = 0;
+};
+
+struct ExplosionDecision {
+    int white_wolf_king_id = -1;
+    int trigger_speaker_id = -1;
+    int target_id = -1;
+};
+
+void rollback_history_after_trigger(json& history, const std::vector<SpeechCheckpoint>& checkpoints, int trigger_speaker_id) {
+    bool erase_next = false;
+    std::size_t rollback_index = history.size();
+
+    for (const SpeechCheckpoint& checkpoint : checkpoints) {
+        if (erase_next) {
+            rollback_index = checkpoint.history_size_before;
+            break;
+        }
+        if (checkpoint.speaker_id == trigger_speaker_id) {
+            erase_next = true;
+        }
+    }
+
+    while (history.size() > rollback_index) {
+        history.erase(history.end() - 1);
+    }
+}
+}
 
 DaySpeakPhase::DaySpeakPhase(GameContext& context, EventBus& event_bus, AIOrchestrator& ai, const DaySpeakPhaseCallbacks& callbacks)
     : m_context(context), m_event_bus(event_bus), m_ai(ai), m_callbacks(callbacks) {}
@@ -131,8 +174,80 @@ void DaySpeakPhase::execute() {
     const std::string alive_list = join_player_ids(m_context.alive_players());
     LOG_INFO("[GAME][DAY][ORDER] actual_alive_order=%s", join_ids(alive_speak_order).c_str());
     const std::string speak_order_text = join_ids(alive_speak_order);
+    Player* white_wolf_king = nullptr;
+    for (Player* player : m_context.alive_players_with_roles({Role::WHITE_WOLF_KING})) {
+        white_wolf_king = player;
+        break;
+    }
+
+    std::atomic<bool> explosion_triggered(false);
+    std::mutex explosion_mutex;
+    ExplosionDecision explosion_decision;
+    std::vector<SpeechCheckpoint> speech_checkpoints;
+    block_queue<Event> judgement_queue(std::max(8, static_cast<int>(alive_speak_order.size()) + 2));
+    std::thread adjudication_thread;
+
+    if (white_wolf_king != nullptr) {
+        LOG_INFO("[GAME][DAY][WWK] async adjudication thread started player=%d", white_wolf_king->get_id());
+        adjudication_thread = std::thread([this, &judgement_queue, &explosion_triggered, &explosion_mutex, &explosion_decision, white_wolf_king]() {
+            const AskOptions silent_options{RequestMode::Sequential, false};
+
+            while (true) {
+                Event event;
+                if (!judgement_queue.pop(event)) {
+                    continue;
+                }
+
+                if (event.name == "__stop__") {
+                    break;
+                }
+                if (explosion_triggered.load()) {
+                    continue;
+                }
+
+                const std::string prompt_name = select_wwk_interrupt_prompt_name(m_context);
+                const std::string instruction = m_ai.render_named_template(
+                    prompt_name,
+                    {
+                        {"speaker_id", std::to_string(event.actor_id)},
+                        {"speech_content", event.message}
+                    }
+                );
+                AIOrchestrator::AIResult result = m_ai.ask_player(*white_wolf_king, prompt_name, instruction, silent_options);
+                try {
+                    json parsed = json::parse(clean_response(result.raw_reply));
+                    if (!parsed.value("explode", false)) {
+                        continue;
+                    }
+
+                    ExplosionDecision decision;
+                    decision.white_wolf_king_id = white_wolf_king->get_id();
+                    decision.trigger_speaker_id = event.actor_id;
+                    decision.target_id = parsed.value("target", -1);
+                    if (decision.target_id != -1 && !m_context.is_player_alive(decision.target_id)) {
+                        decision.target_id = -1;
+                    }
+
+                    bool expected = false;
+                    if (explosion_triggered.compare_exchange_strong(expected, true)) {
+                        LOG_INFO("[GAME][DAY][WWK] async trigger player=%d after_speaker=%d target=%d", decision.white_wolf_king_id, decision.trigger_speaker_id, decision.target_id);
+                        std::lock_guard<std::mutex> lock(explosion_mutex);
+                        explosion_decision = decision;
+                        break;
+                    }
+                } catch (...) {
+                    LOG_WARN("[GAME][DAY][WWK] async parse_failed player=%d", white_wolf_king->get_id());
+                }
+            }
+        });
+    }
 
     for (int player_id : speak_order) {
+        if (explosion_triggered.load()) {
+            LOG_INFO("[GAME][DAY][WWK] main loop interrupted before player=%d", player_id);
+            break;
+        }
+
         Player* player = m_context.find_player(player_id);
         if (player == nullptr || !player->is_alive()) {
             continue;
@@ -152,6 +267,7 @@ void DaySpeakPhase::execute() {
         AIOrchestrator::AIResult result = m_ai.ask_player(*player, "day_speak_instruction", instruction);
         LOG_INFO("[GAME][P%d][THOUGHT][day_speak] %s", player->get_id(), parse_thought_from_reply(result.raw_reply, "（未提供思考）").c_str());
         try {
+            const std::size_t history_size_before = m_context.global_history.size();
             Event speak_event;
             speak_event.type = EventType::BROADCAST;
             speak_event.name = "player_speak";
@@ -160,11 +276,102 @@ void DaySpeakPhase::execute() {
             speak_event.message = parse_speech_from_reply(result.raw_reply);
             LOG_INFO("[GAME][P%d][DECISION][day_speak] speech=%s", player->get_id(), speak_event.message.c_str());
             if (m_event_bus.publish(std::move(speak_event))) {
+                if (adjudication_thread.joinable()) {
+                    Event stop_event;
+                    stop_event.name = "__stop__";
+                    judgement_queue.push(stop_event);
+                    adjudication_thread.join();
+                }
                 return;
+            }
+
+            speech_checkpoints.push_back({player->get_id(), history_size_before});
+            if (adjudication_thread.joinable()) {
+                Event judgement_event;
+                judgement_event.name = "judge_player_speak";
+                judgement_event.actor_id = player->get_id();
+                judgement_event.message = parse_speech_from_reply(result.raw_reply);
+                judgement_queue.push(judgement_event);
             }
         } catch (...) {
             m_event_bus.append_public_record("系统", std::to_string(player->get_id()) + "号玩家发言解析失败。");
         }
+    }
+
+    if (adjudication_thread.joinable()) {
+        Event stop_event;
+        stop_event.name = "__stop__";
+        judgement_queue.push(stop_event);
+        adjudication_thread.join();
+    }
+
+    if (explosion_triggered.load()) {
+        ExplosionDecision decision;
+        {
+            std::lock_guard<std::mutex> lock(explosion_mutex);
+            decision = explosion_decision;
+        }
+
+        rollback_history_after_trigger(m_context.global_history, speech_checkpoints, decision.trigger_speaker_id);
+        m_context.exploded_wwk_commander_id = decision.white_wolf_king_id;
+
+        m_event_bus.broadcast(
+            "系统",
+            "白狼王 " + std::to_string(decision.white_wolf_king_id) +
+            " 号在 " + std::to_string(decision.trigger_speaker_id) + " 号玩家发言后选择自爆！"
+        );
+        if (decision.target_id != -1) {
+            m_event_bus.broadcast(
+                "系统",
+                "白狼王 " + std::to_string(decision.white_wolf_king_id) +
+                " 号带走了 " + std::to_string(decision.target_id) + " 号！"
+            );
+        } else {
+            m_event_bus.broadcast(
+                "系统",
+                "白狼王 " + std::to_string(decision.white_wolf_king_id) + " 号未能带走任何玩家。"
+            );
+        }
+
+        m_callbacks.handle_win_if_needed();
+        m_event_bus.broadcast("系统", "系统已回滚该次自爆触发点之后的白天发言记录。");
+        m_callbacks.handle_win_if_needed();
+
+        if (Player* wwk = m_context.find_player(decision.white_wolf_king_id)) {
+            m_callbacks.publish_player_death(decision.white_wolf_king_id, "explosion", false);
+            if (decision.target_id != -1) {
+                m_callbacks.publish_player_death(decision.target_id, "explosion", true);
+            }
+
+            const std::string last_words_instruction = m_ai.render_named_template(
+                "wwk_last_words_instruction",
+                {
+                    {"player_id", std::to_string(wwk->get_id())},
+                    {"role_name", m_callbacks.role_to_string(wwk->get_role())}
+                }
+            );
+            AIOrchestrator::AIResult last_words_result = m_ai.ask_player(*wwk, "wwk_last_words_instruction", last_words_instruction);
+            try {
+                Event last_words_event;
+                last_words_event.type = EventType::BROADCAST;
+                last_words_event.name = "last_words";
+                last_words_event.actor_id = wwk->get_id();
+                last_words_event.speaker = std::to_string(wwk->get_id()) + "号(白狼王遗言)";
+                last_words_event.message = parse_speech_from_reply(last_words_result.raw_reply);
+                m_event_bus.publish(std::move(last_words_event));
+            } catch (...) {
+                m_event_bus.append_public_record("系统", std::to_string(wwk->get_id()) + "号白狼王遗言解析失败。");
+            }
+        }
+
+        if (m_callbacks.handle_win_if_needed()) {
+            return;
+        }
+
+        m_event_bus.broadcast("系统", "白狼王自爆，白天发言立即中止，直接进入黑夜。");
+        m_context.day_count++;
+        m_context.state = GameState::NIGHT_PHASE;
+        return;
     }
 
     m_context.state = GameState::DAY_VOTE_PHASE;

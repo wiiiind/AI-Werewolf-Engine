@@ -183,6 +183,9 @@ void Judge::run_day_speak() {
         m_ai,
         DaySpeakPhaseCallbacks{
             [this](Role role) { return role_to_string(role); },
+            [this](int dead_id, const std::string& cause, bool allow_hunter) {
+                return publish_player_death(dead_id, cause, allow_hunter);
+            },
             [this]() { return handle_win_if_needed(); }
         }
     );
@@ -212,7 +215,11 @@ void Judge::run_sheriff_election() {
         m_ai,
         SheriffElectionPhaseCallbacks{
             [this](Role role) { return role_to_string(role); },
-            [this](int dead_id) { handle_sheriff_death(dead_id); }
+            [this](int dead_id) { handle_sheriff_death(dead_id); },
+            [this](int dead_id, const std::string& cause, bool allow_hunter) {
+                return publish_player_death(dead_id, cause, allow_hunter);
+            },
+            [this]() { return handle_win_if_needed(); }
         }
     );
     phase.execute();

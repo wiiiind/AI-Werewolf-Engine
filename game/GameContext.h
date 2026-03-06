@@ -45,6 +45,14 @@ public:
     bool witch_save_used = false;
     bool witch_poison_used = false;
     bool enable_first_night_last_words = true;
+    bool first_night_deaths_deferred = false;
+    bool first_night_last_words_pending = false;
+    std::vector<int> first_night_last_words_ids;
+    int first_night_last_words_poison_target = -1;
+    bool sheriff_election_resume_vote_only = false;
+    bool sheriff_election_resume_explosion_loses_badge = false;
+    std::vector<int> deferred_sheriff_candidates;
+    int exploded_wwk_commander_id = -1;
 
     std::string game_config_string;
     int sheriff_id = -1;

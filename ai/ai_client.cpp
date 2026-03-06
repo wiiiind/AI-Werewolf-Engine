@@ -11,6 +11,13 @@
 std::string AIClient::m_api_key = "";
 std::string AIClient::m_base_url = "https://api.deepseek.com/chat/completions";
 
+namespace {
+struct StreamingResponseBuffer {
+    std::string response;
+    bool stream_output = true;
+};
+}
+
 void AIClient::init(const std::string& api_key) {
     if (api_key.empty()) {
         const char* env_key = std::getenv("DEEPSEEK_API_KEY");
@@ -32,7 +39,7 @@ void AIClient::cleanup() {
 
 size_t AIClient::write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
     size_t totalSize = size * nmemb;
-    std::string* response_ptr = static_cast<std::string*>(userp);
+    StreamingResponseBuffer* buffer = static_cast<StreamingResponseBuffer*>(userp);
 
     std::string raw_data(static_cast<char*>(contents), totalSize);
     std::istringstream stream(raw_data);
@@ -50,8 +57,10 @@ size_t AIClient::write_callback(void* contents, size_t size, size_t nmemb, void*
                     auto& delta = j["choices"][0]["delta"];
                     if (delta.contains("content")) {
                         std::string content = delta["content"];
-                        *response_ptr += content;
-                        std::cout << content << std::flush;
+                        buffer->response += content;
+                        if (buffer->stream_output) {
+                            std::cout << content << std::flush;
+                        }
                     }
                 }
             } catch (...) {}
@@ -61,17 +70,22 @@ size_t AIClient::write_callback(void* contents, size_t size, size_t nmemb, void*
 }
 
 std::string AIClient::chat_sync(const json& messages) {
+    return chat_sync(messages, RequestOptions{true});
+}
+
+std::string AIClient::chat_sync(const json& messages, const RequestOptions& options) {
     if (m_api_key.empty()) {
         throw std::runtime_error("DeepSeek API key is not initialized.");
     }
 
-    std::cout << messages << std::endl;
+    // std::cout << messages << std::endl;
     CURL* curl = curl_easy_init();
     if (curl == nullptr) {
         throw std::runtime_error("Failed to initialize CURL for DeepSeek request.");
     }
 
-    std::string full_response;
+    StreamingResponseBuffer buffer;
+    buffer.stream_output = options.stream_output;
     struct curl_slist* headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
     std::string auth = "Authorization: Bearer " + m_api_key;
@@ -88,7 +102,7 @@ std::string AIClient::chat_sync(const json& messages) {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_data.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &full_response);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
 
     CURLcode res = curl_easy_perform(curl);
 
@@ -99,6 +113,8 @@ std::string AIClient::chat_sync(const json& messages) {
         throw std::runtime_error("DeepSeek request failed: " + std::string(curl_easy_strerror(res)));
     }
 
-    std::cout << std::endl;
-    return full_response;
+    if (buffer.stream_output) {
+        std::cout << std::endl;
+    }
+    return buffer.response;
 }

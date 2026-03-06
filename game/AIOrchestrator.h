@@ -5,17 +5,35 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include <memory>
+#include <future>
+#include <iostream>
 #include <nlohmann/json.hpp>
 #include "GameContext.h"
 #include "EventBus.h"
 #include "ai_client.h"
 #include "log.h"
+#include "support/TaskExecutor.h"
 
 using json = nlohmann::json;
 
 class AIOrchestrator {
 public:
     using TemplateValues = std::unordered_map<std::string, std::string>;
+
+    enum class RequestMode {
+        Sequential,
+        Concurrent
+    };
+
+    struct ConcurrencyConfig {
+        std::size_t max_concurrency = 4;
+    };
+
+    struct AskOptions {
+        RequestMode mode = RequestMode::Sequential;
+        bool stream_output = true;
+    };
 
     struct AIResult {
         int player_id = -1;
@@ -27,10 +45,23 @@ public:
         json parsed_reply = json::object();
     };
 
-    AIOrchestrator(GameContext& context, EventBus& event_bus)
-        : m_context(context), m_event_bus(event_bus) {}
+    virtual ~AIOrchestrator() = default;
 
-    std::string render_template(const std::string& template_text, const TemplateValues& values) const {
+    AIOrchestrator(GameContext& context, EventBus& event_bus)
+        : AIOrchestrator(context, event_bus, ConcurrencyConfig{4}) {}
+
+    AIOrchestrator(
+        GameContext& context,
+        EventBus& event_bus,
+        const ConcurrencyConfig& config
+    )
+        : m_context(context), m_event_bus(event_bus), m_concurrency_config(config) {
+        if (m_concurrency_config.max_concurrency > 1) {
+            m_executor = std::make_unique<TaskExecutor>(m_concurrency_config.max_concurrency);
+        }
+    }
+
+    virtual std::string render_template(const std::string& template_text, const TemplateValues& values) const {
         std::string rendered = template_text;
         for (const auto& [key, value] : values) {
             const std::string placeholder = "{" + key + "}";
@@ -43,7 +74,7 @@ public:
         return rendered;
     }
 
-    std::string render_named_template(const std::string& template_name, const TemplateValues& values) const {
+    virtual std::string render_named_template(const std::string& template_name, const TemplateValues& values) const {
         return render_template(m_context.templates.at(template_name).get<std::string>(), values);
     }
 
@@ -118,7 +149,21 @@ public:
         return request;
     }
 
-    AIResult ask_player(Player& player, const std::string& prompt_name, const std::string& instruction) const {
+    virtual AIResult ask_player(Player& player, const std::string& prompt_name, const std::string& instruction) const {
+        return ask_player(
+            player,
+            prompt_name,
+            instruction,
+            AskOptions{RequestMode::Sequential, true}
+        );
+    }
+
+    virtual AIResult ask_player(
+        Player& player,
+        const std::string& prompt_name,
+        const std::string& instruction,
+        const AskOptions& options
+    ) const {
         AIResult result;
         result.player_id = player.get_id();
         result.prompt_name = prompt_name;
@@ -128,7 +173,10 @@ public:
         LOG_INFO("[GAME][P%d][REQUEST][%s] %s", player.get_id(), prompt_name.c_str(), request.dump().c_str());
 
         try {
-            result.raw_reply = AIClient::chat_sync(request);
+            result.raw_reply = AIClient::chat_sync(
+                request,
+                AIClient::RequestOptions{options.stream_output}
+            );
             result.ok = true;
             LOG_INFO("[GAME][P%d][REPLY][%s] %s", player.get_id(), prompt_name.c_str(), result.raw_reply.c_str());
         } catch (const std::exception& ex) {
@@ -142,19 +190,110 @@ public:
         return result;
     }
 
-    std::vector<AIResult> ask_all_players_concurrently(
+    virtual std::future<AIResult> submit_player_request(
+        Player& player,
+        const std::string& prompt_name,
+        const std::string& instruction,
+        const AskOptions& options
+    ) const {
+        Player* player_ptr = &player;
+        if (!m_executor) {
+            std::promise<AIResult> promise;
+            std::future<AIResult> future = promise.get_future();
+            try {
+                promise.set_value(ask_player(*player_ptr, prompt_name, instruction, options));
+            } catch (...) {
+                promise.set_exception(std::current_exception());
+            }
+            return future;
+        }
+
+        return m_executor->submit([this, player_ptr, prompt_name, instruction, options]() {
+            return ask_player(*player_ptr, prompt_name, instruction, options);
+        });
+    }
+
+    template <typename Fn>
+    auto submit_task(Fn&& fn) const -> std::future<std::invoke_result_t<Fn>> {
+        using ResultType = std::invoke_result_t<Fn>;
+
+        if (!m_executor) {
+            std::promise<ResultType> promise;
+            std::future<ResultType> future = promise.get_future();
+            try {
+                promise.set_value(fn());
+            } catch (...) {
+                promise.set_exception(std::current_exception());
+            }
+            return future;
+        }
+
+        return m_executor->submit(std::forward<Fn>(fn));
+    }
+
+    virtual std::vector<AIResult> ask_all_players_concurrently(
         const std::vector<Player*>& players,
         const std::string& prompt_name,
         const std::function<std::string(Player&)>& instruction_builder
     ) const {
+        return ask_players(players, prompt_name, instruction_builder, RequestMode::Concurrent);
+    }
+
+    virtual std::vector<AIResult> ask_players(
+        const std::vector<Player*>& players,
+        const std::string& prompt_name,
+        const std::function<std::string(Player&)>& instruction_builder,
+        RequestMode mode
+    ) const {
         std::vector<AIResult> results;
         results.reserve(players.size());
 
+        if (mode == RequestMode::Concurrent && m_executor && players.size() > 1) {
+            std::vector<std::future<AIResult>> futures;
+            futures.reserve(players.size());
+
+            for (Player* player : players) {
+                futures.push_back(m_executor->submit([this, player, prompt_name, instruction_builder]() {
+                    return ask_player(
+                        *player,
+                        prompt_name,
+                        instruction_builder(*player),
+                        AskOptions{RequestMode::Concurrent, false}
+                    );
+                }));
+            }
+
+            for (std::future<AIResult>& future : futures) {
+                results.push_back(future.get());
+            }
+            return results;
+        }
+
         for (Player* player : players) {
-            results.push_back(ask_player(*player, prompt_name, instruction_builder(*player)));
+            results.push_back(ask_player(
+                *player,
+                prompt_name,
+                instruction_builder(*player),
+                AskOptions{RequestMode::Sequential, true}
+            ));
         }
 
         return results;
+    }
+
+    virtual void print_batch_results(const std::string& title, const std::vector<AIResult>& results) const {
+        if (results.empty()) {
+            return;
+        }
+
+        std::cout << "\n[" << title << "]" << std::endl;
+        for (const AIResult& result : results) {
+            if (!result.ok) {
+                std::cout << result.player_id << "号 请求失败: " << result.error << std::endl;
+                continue;
+            }
+            std::cout << result.player_id << "号 => " << result.raw_reply << std::endl;
+        }
     }
 
 private:
@@ -174,6 +313,8 @@ private:
 private:
     GameContext& m_context;
     EventBus& m_event_bus;
+    ConcurrencyConfig m_concurrency_config;
+    std::unique_ptr<TaskExecutor> m_executor;
 };
 
 #endif

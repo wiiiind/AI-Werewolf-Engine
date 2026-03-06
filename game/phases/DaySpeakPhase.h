@@ -9,6 +9,7 @@
 
 struct DaySpeakPhaseCallbacks {
     std::function<std::string(Role)> role_to_string;
+    std::function<bool(int, const std::string&, bool)> publish_player_death;
     std::function<bool()> handle_win_if_needed;
 };
 

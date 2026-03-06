@@ -14,6 +14,10 @@ using json = nlohmann::json;
 
 class AIClient {
 public:
+    struct RequestOptions {
+        bool stream_output = true;
+    };
+
     // 初始化，传入 API Key
     static void init(const std::string& api_key);
 
@@ -23,6 +27,7 @@ public:
     // 同步聊天接口：传入完整的对话历史，返回 AI 的回复
     // 注意：在 V1.0 我们先做同步阻塞版，放在线程池里跑就不怕卡主线程
     static std::string chat_sync(const json& messages);
+    static std::string chat_sync(const json& messages, const RequestOptions& options);
 
 private:
     // libcurl 所需的回调函数，用于接收返回的数据

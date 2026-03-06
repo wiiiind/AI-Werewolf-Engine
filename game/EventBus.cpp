@@ -11,6 +11,10 @@ const char* event_type_to_string(EventType type) {
         default: return "CUSTOM";
     }
 }
+
+bool should_print_broadcast_to_console(const Event& event) {
+    return event.speaker == "系统";
+}
 }
 #include <algorithm>
 #include <iostream>
@@ -65,7 +69,9 @@ bool EventBus::publish(Event event) {
 
     switch (event.type) {
         case EventType::BROADCAST:
-            std::cout << "\n[" << event.speaker << "]: " << event.message << std::endl;
+            if (should_print_broadcast_to_console(event)) {
+                std::cout << "\n[" << event.speaker << "]: " << event.message << std::endl;
+            }
             if (event.visible_to_all) {
                 m_context.global_history.push_back({{"role", "user"}, {"content", to_history_line(event.speaker, event.message)}});
             }

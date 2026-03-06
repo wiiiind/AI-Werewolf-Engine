@@ -3,7 +3,7 @@
 //
 
 #include <string.h>
-#include <algorithm>
+#include <vector>
 #include <time.h>
 #include <sys/time.h>
 #include <stdarg.h>
@@ -19,6 +19,8 @@ Log::~Log() {
     if (m_fp != NULL) {
         fclose(m_fp);
     }
+    delete[] m_buf;
+    m_buf = NULL;
 }
 
 // 异步需要设置阻塞队列的长度，同步不需要设置
@@ -118,31 +120,35 @@ void Log::write_log(int level, const char *format, ...) {
     va_start(valst, format);
 
     std::string log_str;
-    m_mutex.lock();
-
-    // 写入具体时间内容格式：yyyy-mm-dd hh:mm:ss.micro [level]: content
-    int n = snprintf(m_buf, m_log_buf_size, "%d-%02d-%02d %02d:%02d:%02d.%06ld %s ",
-                     my_tm.tm_year + 1900, my_tm.tm_mon + 1, my_tm.tm_mday,
-                     my_tm.tm_hour, my_tm.tm_min, my_tm.tm_sec, now.tv_usec, s);
-    if (n < 0) {
-        n = 0;
-    } else if (n >= m_log_buf_size) {
-        n = m_log_buf_size - 1;
+    char prefix[128] = {0};
+    int prefix_len = snprintf(prefix, sizeof(prefix), "%d-%02d-%02d %02d:%02d:%02d.%06ld %s ",
+                              my_tm.tm_year + 1900, my_tm.tm_mon + 1, my_tm.tm_mday,
+                              my_tm.tm_hour, my_tm.tm_min, my_tm.tm_sec, now.tv_usec, s);
+    if (prefix_len < 0) {
+        prefix_len = 0;
+    } else if (prefix_len >= static_cast<int>(sizeof(prefix))) {
+        prefix_len = static_cast<int>(sizeof(prefix)) - 1;
     }
 
-    const int payload_capacity = std::max(0, m_log_buf_size - n - 2);
-    int m = vsnprintf(m_buf + n, payload_capacity + 1, format, valst);
-    if (m < 0) {
-        m = 0;
-    } else if (m > payload_capacity) {
-        m = payload_capacity;
+    va_list copy_valst;
+    va_copy(copy_valst, valst);
+    int payload_len = vsnprintf(NULL, 0, format, copy_valst);
+    va_end(copy_valst);
+    if (payload_len < 0) {
+        payload_len = 0;
     }
 
-    m_buf[n + m] = '\n';
-    m_buf[n + m + 1] = '\0';
-    log_str = m_buf;
+    std::vector<char> payload(static_cast<std::size_t>(payload_len) + 1, '\0');
+    if (payload_len > 0) {
+        vsnprintf(payload.data(), payload.size(), format, valst);
+    }
 
-    m_mutex.unlock();
+    log_str.reserve(static_cast<std::size_t>(prefix_len) + static_cast<std::size_t>(payload_len) + 1);
+    log_str.append(prefix, prefix_len);
+    if (payload_len > 0) {
+        log_str.append(payload.data(), payload_len);
+    }
+    log_str.push_back('\n');
 
     if (m_is_async && !m_log_queue->full()) {
         // 异步：塞入队列

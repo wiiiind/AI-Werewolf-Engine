@@ -32,6 +32,8 @@ set(SOURCE_FILES
         game/support/PromptParsers.h
         game/support/PhaseUtils.cpp
         game/support/PhaseUtils.h
+        game/support/TaskExecutor.cpp
+        game/support/TaskExecutor.h
         game/hooks/SkillHooks.cpp
         game/hooks/SkillHooks.h
         game/phases/VotePhase.cpp
@@ -60,4 +62,79 @@ target_link_libraries(WerewolfEngine PRIVATE
 add_executable(LogOverflowTest
         tests/log_overflow_test.cpp
         base/log.cpp
+)
+
+add_executable(DaySpeakWwkInterruptTest
+        tests/day_speak_wwk_interrupt_test.cpp
+        base/log.cpp
+        ai/ai_client.cpp
+        game/GameContext.cpp
+        game/EventBus.cpp
+        game/support/PromptParsers.cpp
+        game/support/PhaseUtils.cpp
+        game/support/TaskExecutor.cpp
+        game/phases/DaySpeakPhase.cpp
+)
+
+add_executable(SheriffElectionWwkInterruptTest
+        tests/sheriff_election_wwk_interrupt_test.cpp
+        base/log.cpp
+        ai/ai_client.cpp
+        game/GameContext.cpp
+        game/EventBus.cpp
+        game/RuleEngine.cpp
+        game/support/PromptParsers.cpp
+        game/support/PhaseUtils.cpp
+        game/support/TaskExecutor.cpp
+        game/phases/SheriffElectionPhase.cpp
+)
+
+add_executable(VotePkWwkInterruptTest
+        tests/vote_pk_wwk_interrupt_test.cpp
+        base/log.cpp
+        ai/ai_client.cpp
+        game/GameContext.cpp
+        game/EventBus.cpp
+        game/RuleEngine.cpp
+        game/support/PromptParsers.cpp
+        game/support/PhaseUtils.cpp
+        game/support/TaskExecutor.cpp
+        game/phases/VotePhase.cpp
+)
+
+add_executable(SheriffElectionDay2WwkExplosionTest
+        tests/sheriff_election_day2_wwk_explosion_test.cpp
+        base/log.cpp
+        ai/ai_client.cpp
+        game/GameContext.cpp
+        game/EventBus.cpp
+        game/RuleEngine.cpp
+        game/support/PromptParsers.cpp
+        game/support/PhaseUtils.cpp
+        game/support/TaskExecutor.cpp
+        game/phases/SheriffElectionPhase.cpp
+)
+
+target_link_libraries(LogOverflowTest PRIVATE
+        Threads::Threads
+)
+
+target_link_libraries(DaySpeakWwkInterruptTest PRIVATE
+        Threads::Threads
+        CURL::libcurl
+)
+
+target_link_libraries(SheriffElectionWwkInterruptTest PRIVATE
+        Threads::Threads
+        CURL::libcurl
+)
+
+target_link_libraries(VotePkWwkInterruptTest PRIVATE
+        Threads::Threads
+        CURL::libcurl
+)
+
+target_link_libraries(SheriffElectionDay2WwkExplosionTest PRIVATE
+        Threads::Threads
+        CURL::libcurl
 )
