@@ -53,6 +53,10 @@ public:
     bool sheriff_election_resume_explosion_loses_badge = false;
     std::vector<int> deferred_sheriff_candidates;
     int exploded_wwk_commander_id = -1;
+    std::vector<std::string> opening_sheriff_speech_lines;
+    std::vector<std::string> day1_day_speech_lines;
+    bool opening_sheriff_speech_compressed = false;
+    bool day1_day_speech_compressed = false;
 
     std::string game_config_string;
     int sheriff_id = -1;

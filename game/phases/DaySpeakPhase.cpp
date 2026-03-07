@@ -20,13 +20,77 @@ std::string select_wwk_interrupt_prompt_name(const GameContext& context) {
 struct SpeechCheckpoint {
     int speaker_id = -1;
     std::size_t history_size_before = 0;
+    std::string speaker_label;
+    std::size_t tracked_line_index = std::string::npos;
 };
 
 struct ExplosionDecision {
     int white_wolf_king_id = -1;
     int trigger_speaker_id = -1;
     int target_id = -1;
+    std::string after_word;
 };
+
+std::string build_interrupted_speech(const std::string& original_speech, const std::string& after_word) {
+    if (!after_word.empty()) {
+        const std::size_t pos = original_speech.find(after_word);
+        if (pos != std::string::npos) {
+            return original_speech.substr(0, pos + after_word.length()) + "......（话音未落，只听“砰”的一声巨响！）";
+        }
+        return original_speech + "......（突然被自爆打断！）";
+    }
+    return original_speech + "......（发言被自爆打断！）";
+}
+
+std::string build_history_line(const std::string& speaker, const std::string& speech) {
+    return speaker + ": " + speech;
+}
+
+void apply_interrupted_speech_to_history(
+    json& history,
+    const std::vector<SpeechCheckpoint>& checkpoints,
+    int trigger_speaker_id,
+    const std::string& after_word
+) {
+    for (const SpeechCheckpoint& checkpoint : checkpoints) {
+        if (checkpoint.speaker_id != trigger_speaker_id) {
+            continue;
+        }
+        if (checkpoint.history_size_before >= history.size()) {
+            return;
+        }
+        json& record = history[checkpoint.history_size_before];
+        if (!record.contains("content") || !record["content"].is_string()) {
+            return;
+        }
+        const std::string content = record["content"].get<std::string>();
+        const std::string prefix = checkpoint.speaker_label + ": ";
+        const std::string speech = content.rfind(prefix, 0) == 0 ? content.substr(prefix.length()) : content;
+        record["content"] = prefix + build_interrupted_speech(speech, after_word);
+        return;
+    }
+}
+
+void apply_interrupted_speech_to_tracked_lines(
+    std::vector<std::string>& lines,
+    const std::vector<SpeechCheckpoint>& checkpoints,
+    int trigger_speaker_id,
+    const std::string& after_word
+) {
+    for (const SpeechCheckpoint& checkpoint : checkpoints) {
+        if (checkpoint.speaker_id != trigger_speaker_id || checkpoint.tracked_line_index == std::string::npos) {
+            continue;
+        }
+        if (checkpoint.tracked_line_index >= lines.size()) {
+            return;
+        }
+        const std::string prefix = checkpoint.speaker_label + ": ";
+        const std::string& content = lines[checkpoint.tracked_line_index];
+        const std::string speech = content.rfind(prefix, 0) == 0 ? content.substr(prefix.length()) : content;
+        lines[checkpoint.tracked_line_index] = prefix + build_interrupted_speech(speech, after_word);
+        return;
+    }
+}
 
 void rollback_history_after_trigger(json& history, const std::vector<SpeechCheckpoint>& checkpoints, int trigger_speaker_id) {
     bool erase_next = false;
@@ -44,6 +108,32 @@ void rollback_history_after_trigger(json& history, const std::vector<SpeechCheck
 
     while (history.size() > rollback_index) {
         history.erase(history.end() - 1);
+    }
+}
+
+void rollback_tracked_lines_after_trigger(
+    std::vector<std::string>& lines,
+    const std::vector<SpeechCheckpoint>& checkpoints,
+    int trigger_speaker_id
+) {
+    bool erase_next = false;
+    std::size_t rollback_index = lines.size();
+
+    for (const SpeechCheckpoint& checkpoint : checkpoints) {
+        if (checkpoint.tracked_line_index == std::string::npos) {
+            continue;
+        }
+        if (erase_next) {
+            rollback_index = checkpoint.tracked_line_index;
+            break;
+        }
+        if (checkpoint.speaker_id == trigger_speaker_id) {
+            erase_next = true;
+        }
+    }
+
+    while (lines.size() > rollback_index) {
+        lines.pop_back();
     }
 }
 }
@@ -224,6 +314,7 @@ void DaySpeakPhase::execute() {
                     decision.white_wolf_king_id = white_wolf_king->get_id();
                     decision.trigger_speaker_id = event.actor_id;
                     decision.target_id = parsed.value("target", -1);
+                    decision.after_word = parsed.value("after_word", "");
                     if (decision.target_id != -1 && !m_context.is_player_alive(decision.target_id)) {
                         decision.target_id = -1;
                     }
@@ -284,8 +375,12 @@ void DaySpeakPhase::execute() {
                 }
                 return;
             }
-
-            speech_checkpoints.push_back({player->get_id(), history_size_before});
+            std::size_t tracked_line_index = std::string::npos;
+            if (m_context.day_count == 1) {
+                tracked_line_index = m_context.day1_day_speech_lines.size();
+                m_context.day1_day_speech_lines.push_back(build_history_line(speak_event.speaker, speak_event.message));
+            }
+            speech_checkpoints.push_back({player->get_id(), history_size_before, speak_event.speaker, tracked_line_index});
             if (adjudication_thread.joinable()) {
                 Event judgement_event;
                 judgement_event.name = "judge_player_speak";
@@ -312,7 +407,24 @@ void DaySpeakPhase::execute() {
             decision = explosion_decision;
         }
 
+        apply_interrupted_speech_to_history(
+            m_context.global_history,
+            speech_checkpoints,
+            decision.trigger_speaker_id,
+            decision.after_word
+        );
+        apply_interrupted_speech_to_tracked_lines(
+            m_context.day1_day_speech_lines,
+            speech_checkpoints,
+            decision.trigger_speaker_id,
+            decision.after_word
+        );
         rollback_history_after_trigger(m_context.global_history, speech_checkpoints, decision.trigger_speaker_id);
+        rollback_tracked_lines_after_trigger(
+            m_context.day1_day_speech_lines,
+            speech_checkpoints,
+            decision.trigger_speaker_id
+        );
         m_context.exploded_wwk_commander_id = decision.white_wolf_king_id;
 
         m_event_bus.broadcast(

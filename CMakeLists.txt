@@ -15,8 +15,6 @@ include_directories(net base ai game)
 # 4. 显式列出所有源文件
 set(SOURCE_FILES
         main.cpp
-        net/epoll_utils.cpp
-        net/http_conn.cpp
         base/log.cpp
         ai/ai_client.cpp
         ai/ai_client.h

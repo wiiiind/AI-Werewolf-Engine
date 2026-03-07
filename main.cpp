@@ -18,6 +18,9 @@ int main() {
     std::cout << "初始化 AI 引擎..." << std::endl;
     LOG_INFO("[GAME][BOOT] initializing ai client");
     AIClient::init("");
+    std::cout << "检查 DeepSeek 服务可用性...\n" << std::endl;
+    LOG_INFO("[GAME][BOOT] probing deepseek service");
+    AIClient:: verify_service_available();
 
     std::cout << "正在召唤数字生命，准备开启狼人杀测试局...\n" << std::endl;
 

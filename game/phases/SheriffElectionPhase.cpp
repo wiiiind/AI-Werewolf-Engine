@@ -39,13 +39,77 @@ bool parse_bool_field(const std::string& raw_reply, const std::string& field, bo
 struct SpeechCheckpoint {
     int speaker_id = -1;
     std::size_t history_size_before = 0;
+    std::string speaker_label;
+    std::size_t tracked_line_index = std::string::npos;
 };
 
 struct ExplosionDecision {
     int white_wolf_king_id = -1;
     int trigger_speaker_id = -1;
     int target_id = -1;
+    std::string after_word;
 };
+
+std::string build_interrupted_speech(const std::string& original_speech, const std::string& after_word) {
+    if (!after_word.empty()) {
+        const std::size_t pos = original_speech.find(after_word);
+        if (pos != std::string::npos) {
+            return original_speech.substr(0, pos + after_word.length()) + "......（话音未落，只听“砰”的一声巨响！）";
+        }
+        return original_speech + "......（突然被自爆打断！）";
+    }
+    return original_speech + "......（发言被自爆打断！）";
+}
+
+std::string build_history_line(const std::string& speaker, const std::string& speech) {
+    return speaker + ": " + speech;
+}
+
+void apply_interrupted_speech_to_history(
+    json& history,
+    const std::vector<SpeechCheckpoint>& checkpoints,
+    int trigger_speaker_id,
+    const std::string& after_word
+) {
+    for (const SpeechCheckpoint& checkpoint : checkpoints) {
+        if (checkpoint.speaker_id != trigger_speaker_id) {
+            continue;
+        }
+        if (checkpoint.history_size_before >= history.size()) {
+            return;
+        }
+        json& record = history[checkpoint.history_size_before];
+        if (!record.contains("content") || !record["content"].is_string()) {
+            return;
+        }
+        const std::string content = record["content"].get<std::string>();
+        const std::string prefix = checkpoint.speaker_label + ": ";
+        const std::string speech = content.rfind(prefix, 0) == 0 ? content.substr(prefix.length()) : content;
+        record["content"] = prefix + build_interrupted_speech(speech, after_word);
+        return;
+    }
+}
+
+void apply_interrupted_speech_to_tracked_lines(
+    std::vector<std::string>& lines,
+    const std::vector<SpeechCheckpoint>& checkpoints,
+    int trigger_speaker_id,
+    const std::string& after_word
+) {
+    for (const SpeechCheckpoint& checkpoint : checkpoints) {
+        if (checkpoint.speaker_id != trigger_speaker_id || checkpoint.tracked_line_index == std::string::npos) {
+            continue;
+        }
+        if (checkpoint.tracked_line_index >= lines.size()) {
+            return;
+        }
+        const std::string prefix = checkpoint.speaker_label + ": ";
+        const std::string& content = lines[checkpoint.tracked_line_index];
+        const std::string speech = content.rfind(prefix, 0) == 0 ? content.substr(prefix.length()) : content;
+        lines[checkpoint.tracked_line_index] = prefix + build_interrupted_speech(speech, after_word);
+        return;
+    }
+}
 
 void rollback_history_after_trigger(json& history, const std::vector<SpeechCheckpoint>& checkpoints, int trigger_speaker_id) {
     bool erase_next = false;
@@ -63,6 +127,32 @@ void rollback_history_after_trigger(json& history, const std::vector<SpeechCheck
 
     while (history.size() > rollback_index) {
         history.erase(history.end() - 1);
+    }
+}
+
+void rollback_tracked_lines_after_trigger(
+    std::vector<std::string>& lines,
+    const std::vector<SpeechCheckpoint>& checkpoints,
+    int trigger_speaker_id
+) {
+    bool erase_next = false;
+    std::size_t rollback_index = lines.size();
+
+    for (const SpeechCheckpoint& checkpoint : checkpoints) {
+        if (checkpoint.tracked_line_index == std::string::npos) {
+            continue;
+        }
+        if (erase_next) {
+            rollback_index = checkpoint.tracked_line_index;
+            break;
+        }
+        if (checkpoint.speaker_id == trigger_speaker_id) {
+            erase_next = true;
+        }
+    }
+
+    while (lines.size() > rollback_index) {
+        lines.pop_back();
     }
 }
 }
@@ -208,6 +298,7 @@ bool SheriffElectionPhase::run_candidate_speeches(const std::vector<int>& candid
                     decision.white_wolf_king_id = white_wolf_king->get_id();
                     decision.trigger_speaker_id = event.actor_id;
                     decision.target_id = parsed.value("target", -1);
+                    decision.after_word = parsed.value("after_word", "");
                     if (decision.target_id != -1 && !m_context.is_player_alive(decision.target_id)) {
                         decision.target_id = -1;
                     }
@@ -269,7 +360,9 @@ bool SheriffElectionPhase::run_candidate_speeches(const std::vector<int>& candid
                 }
                 return false;
             }
-            speech_checkpoints.push_back({player->get_id(), history_size_before});
+            const std::size_t tracked_line_index = m_context.opening_sheriff_speech_lines.size();
+            m_context.opening_sheriff_speech_lines.push_back(build_history_line(speech_event.speaker, speech));
+            speech_checkpoints.push_back({player->get_id(), history_size_before, speech_event.speaker, tracked_line_index});
             if (adjudication_thread.joinable()) {
                 Event judgement_event;
                 judgement_event.name = "judge_sheriff_speech";
@@ -298,7 +391,24 @@ bool SheriffElectionPhase::run_candidate_speeches(const std::vector<int>& candid
             decision = explosion_decision;
         }
 
+        apply_interrupted_speech_to_history(
+            m_context.global_history,
+            speech_checkpoints,
+            decision.trigger_speaker_id,
+            decision.after_word
+        );
+        apply_interrupted_speech_to_tracked_lines(
+            m_context.opening_sheriff_speech_lines,
+            speech_checkpoints,
+            decision.trigger_speaker_id,
+            decision.after_word
+        );
         rollback_history_after_trigger(m_context.global_history, speech_checkpoints, decision.trigger_speaker_id);
+        rollback_tracked_lines_after_trigger(
+            m_context.opening_sheriff_speech_lines,
+            speech_checkpoints,
+            decision.trigger_speaker_id
+        );
         m_context.exploded_wwk_commander_id = decision.white_wolf_king_id;
 
         const bool postpone_election = (m_context.day_count == 1 && !m_context.sheriff_election_resume_explosion_loses_badge);
@@ -446,6 +556,7 @@ void SheriffElectionPhase::execute() {
     );
 
     std::vector<int> candidates = collect_candidates();
+    const std::vector<int> registered_candidates = candidates;
     std::string current_election_history;
 
     if (candidates.empty()) {
@@ -461,10 +572,6 @@ void SheriffElectionPhase::execute() {
         return;
     }
 
-    if (!current_election_history.empty()) {
-        m_event_bus.append_public_record("系统", "警长竞选完整记录:\n" + current_election_history);
-    }
-
     if (candidates.size() == 1) {
         m_context.sheriff_id = candidates.front();
         m_event_bus.broadcast("系统", std::to_string(m_context.sheriff_id) + "号玩家自动当选警长。");
@@ -474,10 +581,6 @@ void SheriffElectionPhase::execute() {
     }
 
     candidates = collect_withdrawals(candidates, current_election_history);
-    if (!current_election_history.empty()) {
-        m_event_bus.append_public_record("系统", "警长竞选完整记录:\n" + current_election_history);
-    }
-
     if (candidates.empty()) {
         m_context.sheriff_id = -1;
         LOG_INFO("[GAME][SHERIFF][RESULT] sheriff_lost via=withdraw_all");
@@ -501,7 +604,7 @@ void SheriffElectionPhase::execute() {
 
     std::vector<Player*> voters;
     for (Player* player : m_context.alive_players()) {
-        if (std::find(candidates.begin(), candidates.end(), player->get_id()) == candidates.end()) {
+        if (std::find(registered_candidates.begin(), registered_candidates.end(), player->get_id()) == registered_candidates.end()) {
             voters.push_back(player);
         }
     }
@@ -603,6 +706,7 @@ void SheriffElectionPhase::execute() {
                         decision.white_wolf_king_id = white_wolf_king->get_id();
                         decision.trigger_speaker_id = event.actor_id;
                         decision.target_id = parsed.value("target", -1);
+                        decision.after_word = parsed.value("after_word", "");
                         if (decision.target_id != -1 && !m_context.is_player_alive(decision.target_id)) {
                             decision.target_id = -1;
                         }
@@ -663,7 +767,9 @@ void SheriffElectionPhase::execute() {
                     }
                     return;
                 }
-                pk_speech_checkpoints.push_back({candidate->get_id(), history_size_before});
+                const std::size_t tracked_line_index = m_context.opening_sheriff_speech_lines.size();
+                m_context.opening_sheriff_speech_lines.push_back(build_history_line(speech_event.speaker, speech));
+                pk_speech_checkpoints.push_back({candidate->get_id(), history_size_before, speech_event.speaker, tracked_line_index});
                 if (adjudication_thread.joinable()) {
                     Event judgement_event;
                     judgement_event.name = "judge_sheriff_pk_speech";
@@ -690,7 +796,24 @@ void SheriffElectionPhase::execute() {
                 decision = explosion_decision;
             }
 
+            apply_interrupted_speech_to_history(
+                m_context.global_history,
+                pk_speech_checkpoints,
+                decision.trigger_speaker_id,
+                decision.after_word
+            );
+            apply_interrupted_speech_to_tracked_lines(
+                m_context.opening_sheriff_speech_lines,
+                pk_speech_checkpoints,
+                decision.trigger_speaker_id,
+                decision.after_word
+            );
             rollback_history_after_trigger(m_context.global_history, pk_speech_checkpoints, decision.trigger_speaker_id);
+            rollback_tracked_lines_after_trigger(
+                m_context.opening_sheriff_speech_lines,
+                pk_speech_checkpoints,
+                decision.trigger_speaker_id
+            );
             m_context.exploded_wwk_commander_id = decision.white_wolf_king_id;
             const bool postpone_election = (m_context.day_count == 1 && !m_context.sheriff_election_resume_explosion_loses_badge);
             if (postpone_election && m_context.last_night_poison_target == decision.white_wolf_king_id) {
@@ -768,7 +891,7 @@ void SheriffElectionPhase::execute() {
         std::map<int, std::vector<int>> round2_records;
         std::vector<Player*> pk_voters;
         for (Player* player : m_context.alive_players()) {
-            if (std::find(resolution.leaders.begin(), resolution.leaders.end(), player->get_id()) == resolution.leaders.end()) {
+            if (std::find(registered_candidates.begin(), registered_candidates.end(), player->get_id()) == registered_candidates.end()) {
                 pk_voters.push_back(player);
             }
         }

@@ -8,6 +8,7 @@
 #include <memory>
 #include <future>
 #include <iostream>
+#include <regex>
 #include <nlohmann/json.hpp>
 #include "GameContext.h"
 #include "EventBus.h"
@@ -76,6 +77,61 @@ public:
 
     virtual std::string render_named_template(const std::string& template_name, const TemplateValues& values) const {
         return render_template(m_context.templates.at(template_name).get<std::string>(), values);
+    }
+
+    virtual std::string build_assistant_prefix(const std::string& instruction) const {
+        static const std::regex thought_regex(R"(返回格式：\{\"thought\":\s*\"([^\"]*)\")");
+        std::smatch match;
+        if (!std::regex_search(instruction, match, thought_regex)) {
+            return "";
+        }
+
+        std::string thought_prefix = match[1].str();
+        const std::size_t ellipsis_pos = thought_prefix.find("...");
+        if (ellipsis_pos != std::string::npos) {
+            thought_prefix = thought_prefix.substr(0, ellipsis_pos);
+        }
+        return "{\"thought\": \"" + thought_prefix;
+    }
+
+    virtual AIResult ask_messages(
+        const std::string& prompt_name,
+        const json& request,
+        const AskOptions& options,
+        const std::string& assistant_prefix = ""
+    ) const {
+        AIResult result;
+        result.prompt_name = prompt_name;
+
+        try {
+            const AIClient::ChatResult chat_result = AIClient::chat_sync_with_metadata(
+                request,
+                AIClient::RequestOptions{options.stream_output, true, assistant_prefix, 2048}
+            );
+            result.raw_reply = chat_result.content;
+            result.ok = true;
+            const std::string combined_log =
+                "[PROMPT_RESULT][" + prompt_name + "]\n" +
+                "[REQUEST]\n" + request.dump() + "\n" +
+                "[REPLY]\n" + result.raw_reply + "\n";
+            LOG_INFO("%s", combined_log.c_str());
+        } catch (const std::exception& ex) {
+            result.error = ex.what();
+            const std::string combined_log =
+                "[PROMPT_ERROR][" + prompt_name + "]\n" +
+                "[REQUEST]\n" + request.dump() + "\n" +
+                "[ERROR]\n" + result.error + "\n";
+            LOG_ERROR("%s", combined_log.c_str());
+        } catch (...) {
+            result.error = "unknown_error";
+            const std::string combined_log =
+                "[PROMPT_ERROR][" + prompt_name + "]\n" +
+                "[REQUEST]\n" + request.dump() + "\n" +
+                "[ERROR]\n" + result.error + "\n";
+            LOG_ERROR("%s", combined_log.c_str());
+        }
+
+        return result;
     }
 
     json build_request(Player& player, const std::string& instruction) const {
@@ -170,23 +226,15 @@ public:
         result.instruction = instruction;
 
         const json request = build_request(player, instruction);
-        LOG_INFO("[GAME][P%d][REQUEST][%s] %s", player.get_id(), prompt_name.c_str(), request.dump().c_str());
-
-        try {
-            result.raw_reply = AIClient::chat_sync(
-                request,
-                AIClient::RequestOptions{options.stream_output}
-            );
-            result.ok = true;
-            LOG_INFO("[GAME][P%d][REPLY][%s] %s", player.get_id(), prompt_name.c_str(), result.raw_reply.c_str());
-        } catch (const std::exception& ex) {
-            result.error = ex.what();
-            LOG_ERROR("[GAME][P%d][ERROR][%s] %s", player.get_id(), prompt_name.c_str(), result.error.c_str());
-        } catch (...) {
-            result.error = "unknown_error";
-            LOG_ERROR("[GAME][P%d][ERROR][%s] %s", player.get_id(), prompt_name.c_str(), result.error.c_str());
-        }
-
+        result = ask_messages(
+            "[GAME][P" + std::to_string(player.get_id()) + "][" + prompt_name + "]",
+            request,
+            options,
+            build_assistant_prefix(instruction)
+        );
+        result.player_id = player.get_id();
+        result.prompt_name = prompt_name;
+        result.instruction = instruction;
         return result;
     }
 

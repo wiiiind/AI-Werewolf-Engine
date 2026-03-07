@@ -27,6 +27,8 @@ private:
     void handle_sheriff_death(int dead_id);
     bool publish_player_death(int dead_id, const std::string& cause, bool allow_hunter);
     bool handle_win_if_needed();
+    void maybe_compress_public_history();
+    bool compress_history_block(std::vector<std::string>& lines, const std::string& stage_name, bool& compressed_flag);
 
 private:
     GameContext m_context;

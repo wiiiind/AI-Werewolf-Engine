@@ -14,12 +14,27 @@ using json = nlohmann::json;
 
 class AIClient {
 public:
+    struct UsageInfo {
+        int hit = 0;
+        int miss = 0;
+        int completion = 0;
+    };
+
+    struct ChatResult {
+        std::string content;
+        UsageInfo usage;
+    };
+
     struct RequestOptions {
         bool stream_output = true;
+        bool json_output = true;
+        std::string assistant_prefix;
+        int max_tokens = 2048;
     };
 
     // 初始化，传入 API Key
     static void init(const std::string& api_key);
+    static void verify_service_available();
 
     // 清理资源
     static void cleanup();
@@ -28,6 +43,7 @@ public:
     // 注意：在 V1.0 我们先做同步阻塞版，放在线程池里跑就不怕卡主线程
     static std::string chat_sync(const json& messages);
     static std::string chat_sync(const json& messages, const RequestOptions& options);
+    static ChatResult chat_sync_with_metadata(const json& messages, const RequestOptions& options);
 
 private:
     // libcurl 所需的回调函数，用于接收返回的数据
@@ -35,6 +51,7 @@ private:
 
     static std::string m_api_key;
     static std::string m_base_url;
+    static std::string m_beta_base_url;
 };
 
 

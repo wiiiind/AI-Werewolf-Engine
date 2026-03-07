@@ -16,6 +16,16 @@
 #include "phases/SheriffElectionPhase.h"
 #include "phases/NightPhase.h"
 
+namespace {
+std::string join_lines(const std::vector<std::string>& lines) {
+    std::string result;
+    for (const std::string& line : lines) {
+        result += line;
+        result += "\n";
+    }
+    return result;
+}
+}
 
 Judge::Judge() : m_event_bus(m_context), m_ai(m_context, m_event_bus) {
     init_config();
@@ -129,6 +139,100 @@ std::string Judge::role_to_string(Role role) const {
     }
 }
 
+bool Judge::compress_history_block(std::vector<std::string>& lines, const std::string& stage_name, bool& compressed_flag) {
+    if (compressed_flag || lines.empty()) {
+        return false;
+    }
+
+    const std::string system_prompt = m_ai.render_named_template("history_compression_system_instruction", {});
+    const std::string user_prompt = m_ai.render_named_template(
+        "history_compression_user_instruction",
+        {
+            {"stage_name", stage_name},
+            {"raw_stage_text", join_lines(lines)}
+        }
+    );
+
+    json request = json::array();
+    request.push_back({{"role", "system"}, {"content", system_prompt}});
+    request.push_back({{"role", "user"}, {"content", user_prompt}});
+
+    AIOrchestrator::AIResult result = m_ai.ask_messages(
+        "[GAME][HISTORY_COMPRESSION][" + stage_name + "]",
+        request,
+        AIOrchestrator::AskOptions{AIOrchestrator::RequestMode::Sequential, false},
+        "{\"summary_text\":\""
+    );
+    if (!result.ok) {
+        LOG_WARN("[GAME][HISTORY_COMPRESSION] stage=%s action=skip reason=request_failed", stage_name.c_str());
+        return false;
+    }
+
+    std::string summary_text;
+    try {
+        const json parsed = json::parse(clean_response(result.raw_reply));
+        summary_text = parsed.value("summary_text", "");
+    } catch (...) {
+        LOG_WARN("[GAME][HISTORY_COMPRESSION] stage=%s action=skip reason=parse_failed", stage_name.c_str());
+        return false;
+    }
+
+    if (summary_text.empty()) {
+        LOG_WARN("[GAME][HISTORY_COMPRESSION] stage=%s action=skip reason=empty_summary", stage_name.c_str());
+        return false;
+    }
+
+    std::vector<std::size_t> indices;
+    indices.reserve(lines.size());
+    std::size_t cursor = 0;
+    for (const std::string& target_line : lines) {
+        bool found = false;
+        while (cursor < m_context.global_history.size()) {
+            const json& item = m_context.global_history[cursor];
+            if (item.contains("content") && item["content"].is_string() && item["content"].get<std::string>() == target_line) {
+                indices.push_back(cursor);
+                ++cursor;
+                found = true;
+                break;
+            }
+            ++cursor;
+        }
+        if (!found) {
+            LOG_WARN("[GAME][HISTORY_COMPRESSION] stage=%s action=skip reason=history_mismatch", stage_name.c_str());
+            return false;
+        }
+    }
+
+    const std::size_t insert_index = indices.front();
+    for (auto it = indices.rbegin(); it != indices.rend(); ++it) {
+        m_context.global_history.erase(m_context.global_history.begin() + static_cast<json::difference_type>(*it));
+    }
+    m_context.global_history.insert(
+        m_context.global_history.begin() + static_cast<json::difference_type>(insert_index),
+        {{"role", "user"}, {"content", "系统: 【压缩摘要：" + stage_name + "】\n" + summary_text}}
+    );
+
+    compressed_flag = true;
+    lines.clear();
+    LOG_INFO("[GAME][HISTORY_COMPRESSION] stage=%s action=compressed", stage_name.c_str());
+    return true;
+}
+
+void Judge::maybe_compress_public_history() {
+    if (m_context.day_count >= 3) {
+        compress_history_block(
+            m_context.opening_sheriff_speech_lines,
+            "首轮警长竞选发言",
+            m_context.opening_sheriff_speech_compressed
+        );
+        compress_history_block(
+            m_context.day1_day_speech_lines,
+            "第1天白天发言",
+            m_context.day1_day_speech_compressed
+        );
+    }
+}
+
 bool Judge::handle_win_if_needed() {
     const WinCheckResult result = RuleEngine::check_win_condition(m_context);
     if (!result.game_over) {
@@ -177,6 +281,7 @@ void Judge::run_night() {
 }
 
 void Judge::run_day_speak() {
+    maybe_compress_public_history();
     DaySpeakPhase phase(
         m_context,
         m_event_bus,
@@ -209,6 +314,7 @@ void Judge::run_vote() {
 }
 
 void Judge::run_sheriff_election() {
+    maybe_compress_public_history();
     SheriffElectionPhase phase(
         m_context,
         m_event_bus,
@@ -227,6 +333,16 @@ void Judge::run_sheriff_election() {
 
 void Judge::handle_sheriff_death(int dead_id) {
     if (m_context.sheriff_id != dead_id) {
+        return;
+    }
+
+    const WinCheckResult win_result = RuleEngine::check_win_condition(m_context);
+    if (win_result.game_over) {
+        LOG_INFO("[GAME][SHERIFF] dead_sheriff=%d action=skip_pass_due_to_game_over winner=%s reason=%s",
+                 dead_id,
+                 win_result.winner.c_str(),
+                 win_result.reason.c_str());
+        m_context.sheriff_id = -1;
         return;
     }
 
